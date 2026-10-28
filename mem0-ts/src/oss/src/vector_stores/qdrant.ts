@@ -11,6 +11,8 @@ import * as fs from "fs";
 
 const BM25_VECTOR_NAME = "bm25";
 const BM25_MODEL = "Qdrant/bm25";
+// Max points per scroll request in list().
+const SCROLL_PAGE_SIZE = 1000;
 
 interface QdrantConfig extends VectorStoreConfig {
   /**
@@ -459,24 +461,38 @@ export class Qdrant implements VectorStore {
     topK: number = 100,
   ): Promise<[VectorStoreResult[], number]> {
     await this.initialize();
-    const scrollRequest = {
-      limit: topK,
-      filter: this.createFilter(filters),
-      with_payload: true,
-      with_vectors: false,
-    };
+    const filter = this.createFilter(filters);
+    const results: VectorStoreResult[] = [];
+    let offset: any = undefined;
 
-    const response = await this.client.scroll(
-      this.collectionName,
-      scrollRequest,
-    );
+    // Follow next_page_offset so topK is honored past a single page.
+    while (results.length < topK) {
+      const response = await this.client.scroll(this.collectionName, {
+        limit: Math.min(topK - results.length, SCROLL_PAGE_SIZE),
+        filter,
+        with_payload: true,
+        with_vector: false,
+        ...(offset !== undefined ? { offset } : {}),
+      });
 
-    const results = response.points.map((point) => ({
-      id: String(point.id),
-      payload: (point.payload as Record<string, any>) || {},
-    }));
+      for (const point of response.points) {
+        results.push({
+          id: String(point.id),
+          payload: (point.payload as Record<string, any>) || {},
+        });
+      }
 
-    return [results, response.points.length];
+      offset = response.next_page_offset;
+      if (
+        offset === undefined ||
+        offset === null ||
+        response.points.length === 0
+      ) {
+        break;
+      }
+    }
+
+    return [results, results.length];
   }
 
   private generateUUID(): string {

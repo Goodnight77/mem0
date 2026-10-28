@@ -360,6 +360,27 @@ export class Memory {
     return value.trim().toLowerCase().replace(/\s+/g, " ");
   }
 
+  /**
+   * List every entity row in `filters` scope, not just the first 10k.
+   * ponytail: re-lists with a doubled limit until a result comes back short,
+   * so reads are ~2x the scope size; add a cursor to VectorStore.list if that matters.
+   */
+  private async _listEntityScope(
+    entityStore: VectorStore,
+    filters: Record<string, any>,
+  ): Promise<Array<{ id: string; payload: Record<string, any> }>> {
+    for (let limit = 10000; ; limit *= 2) {
+      const listed = await entityStore.list(filters, limit);
+      const rows = (
+        Array.isArray(listed) && Array.isArray(listed[0])
+          ? listed[0]
+          : (listed as any)
+      ) as Array<{ id: string; payload: Record<string, any> }>;
+      // A short (or capped-by-store) result means the scope is exhausted.
+      if (rows.length !== limit) return rows;
+    }
+  }
+
   private async _existingEntitiesByText(
     entityStore: VectorStore,
     filters: Record<string, any>,
@@ -370,12 +391,7 @@ export class Memory {
     >();
     let rows: Array<{ id: string; payload: Record<string, any> }> = [];
     try {
-      const listed = await entityStore.list(filters, 10000);
-      rows = (
-        Array.isArray(listed) && Array.isArray(listed[0])
-          ? listed[0]
-          : (listed as any)
-      ) as Array<{ id: string; payload: Record<string, any> }>;
+      rows = await this._listEntityScope(entityStore, filters);
     } catch (e) {
       console.debug(
         `Exact entity lookup failed, falling back to semantic dedup: ${e}`,
@@ -416,12 +432,7 @@ export class Memory {
 
     let rows: Array<{ id: string; payload: Record<string, any> }> = [];
     try {
-      const listed = await entityStore.list(filters, 10000);
-      rows = (
-        Array.isArray(listed) && Array.isArray(listed[0])
-          ? listed[0]
-          : (listed as any)
-      ) as Array<{ id: string; payload: Record<string, any> }>;
+      rows = await this._listEntityScope(entityStore, filters);
     } catch (e) {
       console.debug(`Entity store list failed during cleanup: ${e}`);
       return;
