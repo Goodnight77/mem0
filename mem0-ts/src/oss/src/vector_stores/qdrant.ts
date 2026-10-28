@@ -129,67 +129,27 @@ export class Qdrant implements VectorStore {
   }
 
   /**
-   * Build a single field condition from a key-value filter pair.
-   * Supports enhanced filter syntax with comparison operators.
+   * Build the field conditions for a key-value filter pair.
+   * Returns one condition per operator: a Qdrant condition holds a single
+   * `match` or `range`, so `{ ne, nin }` on one field needs two conditions.
    */
-  private buildFieldCondition(key: string, value: any): QdrantCondition | null {
+  private buildFieldConditions(key: string, value: any): QdrantCondition[] {
     // Handle non-dict values
     if (typeof value !== "object" || value === null) {
       // Wildcard: match any value - skip this filter
       if (value === "*") {
-        return null;
+        return [];
       }
       // Simple equality
-      return { key, match: { value } };
+      return [{ key, match: { value } }];
     }
 
     // Handle array shorthand: {"field": ["a", "b"]} treated as "in" operator
     if (Array.isArray(value)) {
-      return { key, match: { any: value } };
+      return [{ key, match: { any: value } }];
     }
 
     const ops = Object.keys(value);
-    const rangeOps = ["gt", "gte", "lt", "lte"];
-    const hasRangeOps = ops.some((op) => rangeOps.includes(op));
-    const nonRangeOps = ops.filter((op) => !rangeOps.includes(op));
-
-    // Handle range operators
-    if (hasRangeOps) {
-      if (nonRangeOps.length > 0) {
-        throw new Error(
-          `Cannot mix range operators (${ops.filter((o) => rangeOps.includes(o)).join(", ")}) ` +
-            `with non-range operators (${nonRangeOps.join(", ")}) for field '${key}'. ` +
-            `Use AND to combine them as separate conditions.`,
-        );
-      }
-      const range: Record<string, number | string> = {};
-      for (const op of rangeOps) {
-        if (op in value) {
-          range[op] = value[op];
-        }
-      }
-      return { key, range };
-    }
-
-    // Handle comparison operators
-    if ("eq" in value) {
-      return { key, match: { value: value.eq } };
-    }
-    if ("ne" in value) {
-      return { key, match: { except: [value.ne] } };
-    }
-    if ("in" in value) {
-      return { key, match: { any: value.in } };
-    }
-    if ("nin" in value) {
-      return { key, match: { except: value.nin } };
-    }
-    if ("contains" in value || "icontains" in value) {
-      const text = value.contains || value.icontains;
-      return { key, match: { text } };
-    }
-
-    // Unknown operator - treat as nested object for simple match
     const supportedOps = [
       "eq",
       "ne",
@@ -202,10 +162,45 @@ export class Qdrant implements VectorStore {
       "contains",
       "icontains",
     ];
-    throw new Error(
-      `Unsupported filter operator(s) for field '${key}': ${ops.join(", ")}. ` +
-        `Supported operators: ${supportedOps.join(", ")}`,
-    );
+    if (ops.length === 0 || ops.some((op) => !supportedOps.includes(op))) {
+      throw new Error(
+        `Unsupported filter operator(s) for field '${key}': ${ops.join(", ")}. ` +
+          `Supported operators: ${supportedOps.join(", ")}`,
+      );
+    }
+
+    const conditions: QdrantCondition[] = [];
+
+    // Range operators share one condition
+    const range: Record<string, number | string> = {};
+    for (const op of ["gt", "gte", "lt", "lte"]) {
+      if (op in value) {
+        range[op] = value[op];
+      }
+    }
+    if (Object.keys(range).length > 0) {
+      conditions.push({ key, range });
+    }
+
+    // Handle comparison operators
+    if ("eq" in value) {
+      conditions.push({ key, match: { value: value.eq } });
+    }
+    if ("ne" in value) {
+      conditions.push({ key, match: { except: [value.ne] } });
+    }
+    if ("in" in value) {
+      conditions.push({ key, match: { any: value.in } });
+    }
+    if ("nin" in value) {
+      conditions.push({ key, match: { except: value.nin } });
+    }
+    if ("contains" in value || "icontains" in value) {
+      const text = value.contains || value.icontains;
+      conditions.push({ key, match: { text } });
+    }
+
+    return conditions;
   }
 
   /**
@@ -272,11 +267,8 @@ export class Qdrant implements VectorStore {
           }
         }
       } else {
-        // Regular field condition
-        const condition = this.buildFieldCondition(key, value);
-        if (condition !== null) {
-          must.push(condition);
-        }
+        // Regular field condition(s)
+        must.push(...this.buildFieldConditions(key, value));
       }
     }
 

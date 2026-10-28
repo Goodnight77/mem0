@@ -2146,6 +2146,19 @@ export class Memory {
       return result;
     };
 
+    // Merge operators on the same field instead of overwriting, so
+    // AND: [{ f: { ne } }, { f: { nin } }] keeps both.
+    // ponytail: the same operator twice on one field still keeps the last one.
+    const isOps = (v: any) =>
+      typeof v === "object" && v !== null && !Array.isArray(v);
+    const mergeCondition = (condition: Record<string, any>) => {
+      for (const [field, ops] of Object.entries(condition)) {
+        const prev = processedFilters[field];
+        processedFilters[field] =
+          isOps(prev) && isOps(ops) ? { ...prev, ...ops } : ops;
+      }
+    };
+
     for (const [key, value] of Object.entries(metadataFilters)) {
       if (key === "AND") {
         // Logical AND: combine multiple conditions
@@ -2154,7 +2167,7 @@ export class Memory {
         }
         for (const condition of value) {
           for (const [subKey, subValue] of Object.entries(condition)) {
-            Object.assign(processedFilters, processCondition(subKey, subValue));
+            mergeCondition(processCondition(subKey, subValue));
           }
         }
       } else if (key === "OR") {
@@ -2192,7 +2205,7 @@ export class Memory {
           processedFilters["$not"].push(notCondition);
         }
       } else {
-        Object.assign(processedFilters, processCondition(key, value));
+        mergeCondition(processCondition(key, value));
       }
     }
 
