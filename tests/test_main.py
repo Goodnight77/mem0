@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from mem0.configs.base import MemoryConfig
-from mem0.memory.main import Memory, _validate_and_trim_entity_id
+from mem0.memory.main import AsyncMemory, Memory, _validate_and_trim_entity_id
 
 
 @pytest.fixture(autouse=True)
@@ -349,10 +349,11 @@ def test_get_all_can_show_expired_memories(memory_instance):
     assert [memory["memory"] for memory in result["results"]] == ["Expired memory", "Active memory"]
 
 
-def test_no_telemetry_vector_store_when_disabled():
-    """VectorStoreFactory should only be called once (for user data) when telemetry is disabled."""
+@pytest.mark.parametrize("memory_cls", [Memory, AsyncMemory])
+def test_init_creates_only_the_user_vector_store(memory_cls):
+    """Init must not open a second store, e.g. a mem0migrations collection on a remote Qdrant (#7764)."""
     with (
-        patch("mem0.memory.main.MEM0_TELEMETRY", False),
+        patch("mem0.memory.telemetry.MEM0_TELEMETRY", True),
         patch("mem0.utils.factory.EmbedderFactory") as mock_embedder,
         patch("mem0.memory.main.VectorStoreFactory") as mock_vector_store,
         patch("mem0.utils.factory.LlmFactory") as mock_llm,
@@ -362,31 +363,17 @@ def test_no_telemetry_vector_store_when_disabled():
         mock_vector_store.create.return_value = Mock()
         mock_llm.create.return_value = Mock()
 
-        config = MemoryConfig(version="v1.1")
-        Memory(config)
+        config = MemoryConfig(
+            version="v1.1",
+            vector_store={
+                "provider": "qdrant",
+                "config": {"url": "https://cluster.example:6333", "api_key": "key", "collection_name": "prod"},
+            },
+        )
+        memory_cls(config)
 
-        # VectorStoreFactory.create should be called exactly once — for user data only, not telemetry
-        assert mock_vector_store.create.call_count == 1
-
-
-def test_telemetry_vector_store_created_when_enabled():
-    """VectorStoreFactory should be called twice (user data + telemetry) when telemetry is enabled."""
-    with (
-        patch("mem0.memory.main.MEM0_TELEMETRY", True),
-        patch("mem0.utils.factory.EmbedderFactory") as mock_embedder,
-        patch("mem0.memory.main.VectorStoreFactory") as mock_vector_store,
-        patch("mem0.utils.factory.LlmFactory") as mock_llm,
-        patch("mem0.memory.telemetry.capture_event"),
-    ):
-        mock_embedder.create.return_value = Mock()
-        mock_vector_store.create.return_value = Mock()
-        mock_llm.create.return_value = Mock()
-
-        config = MemoryConfig(version="v1.1")
-        Memory(config)
-
-        # VectorStoreFactory.create should be called twice — user data + telemetry
-        assert mock_vector_store.create.call_count == 2
+        mock_vector_store.create.assert_called_once()
+        assert mock_vector_store.create.call_args.args[1].collection_name == "prod"
 
 
 # =============================================================================

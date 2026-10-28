@@ -328,8 +328,7 @@ class OSSBackend(Mem0Backend):
                 with suppress(Exception):
                     telemetry.posthog.shutdown()
         vs = getattr(self._memory, "vector_store", None)
-        telemetry_vs = getattr(self._memory, "_telemetry_vector_store", None)
-        resources = (self._memory, vs, getattr(vs, "client", None), getattr(telemetry_vs, "client", None))
+        resources = (self._memory, vs, getattr(vs, "client", None))
         for obj in {id(obj): obj for obj in resources if obj is not None}.values():
             if hasattr(obj, "close"):
                 with suppress(Exception):
